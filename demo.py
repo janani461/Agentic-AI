@@ -1,15 +1,15 @@
 """
-DEMO SCRIPT — Modules 1 to 5
-------------------------------
+DEMO SCRIPT — Modules 1 to 5 and 7
+------------------------------------
 This is NOT a separate module. It's a walkthrough script that ties together:
     Module 1 (Storage), Module 2 (Deadline Tool), Module 3 (Availability Tool),
-    Module 4 (Reprioritization Tool), Module 5 (Memory)
+    Module 4 (Reprioritization Tool), Module 5 (Memory), Module 7 (Negotiation Tool)
 
-Purpose: demonstrate to the tutor that the data layer + 3 tools + memory
-all work together correctly, BEFORE the Agent Orchestration (Module 6)
-is added on top. Module 6 will later let an LLM decide when to call these
-tools automatically — for now, this script calls them in a clear, narrated
-sequence so the logic itself can be verified and explained.
+Purpose: demonstrate to the tutor that the data layer + tools + memory
+all work together correctly, WITHOUT the Agent Orchestration (Module 6)
+on top. Module 6 lets an LLM decide when to call these tools
+automatically — this script calls them in a clear, narrated sequence so
+the logic itself can be verified and explained. It needs no API key.
 
 Run this with: python demo.py
 """
@@ -21,6 +21,7 @@ import deadline_tool as dt
 import availability_tool as at
 import reprioritization_tool as rt
 import memory as mem
+import negotiation_tool as nt
 
 
 def section(title):
@@ -106,7 +107,8 @@ section("STEP 5: Recording an outcome after finishing a task (Memory learns)")
 
 print("Before recording outcome, pace_multiplier =", mem.get_pace_multiplier())
 
-outcome_result = mem.record_outcome(deadline_id=2, actual_hours_taken=4.5, outcome="missed")
+# Estimated 3h but it really took 6h -> a 2.0x ratio, which pulls the pace above 1.5
+outcome_result = mem.record_outcome(deadline_id=2, actual_hours_taken=6, outcome="missed")
 print(outcome_result)
 
 print("After recording outcome, pace_multiplier =", mem.get_pace_multiplier())
@@ -125,8 +127,19 @@ pretty(result2)
 
 print("\n>>> AT-RISK TASKS (after learning):", result2.get("at_risk_tasks"))
 
+# =======================================================================
+# STEP 7: Plan the remaining work and list the ways out (Module 7 - Negotiation Tool)
+# =======================================================================
+section("STEP 7: Day-by-day plan and negotiation options (Negotiation Tool)")
+
+print("Day-by-day plan:")
+pretty(nt.build_plan())
+
+print("\nOptions for each deadline that doesn't fit:")
+pretty(nt.get_negotiation_options())
+
 section("DEMO COMPLETE")
 print("This demonstrates: Storage -> Deadline Tool -> Availability Tool ->")
-print("Reprioritization Tool -> Memory, all working together WITHOUT the")
-print("Agent Orchestration layer yet. Module 6 will let an LLM decide when")
-print("to call each of these automatically based on natural conversation.")
+print("Reprioritization Tool -> Memory -> Negotiation Tool, all working together")
+print("WITHOUT the Agent Orchestration layer. Module 6 (agent.py) lets an LLM")
+print("decide when to call each of these automatically based on natural conversation.")

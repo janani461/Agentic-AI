@@ -11,7 +11,7 @@ adds a chat tab that talks to the agent (agent.py).
 """
 
 import os
-import anthropic
+from google.genai import errors as genai_errors
 import streamlit as st
 import storage
 import deadline_tool as dt
@@ -238,11 +238,11 @@ with tab6:
     st.subheader("Chat with the Agent")
     st.caption("Ask in plain language. The agent decides which tools to call.")
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        st.warning("Set the ANTHROPIC_API_KEY environment variable and restart the app to use the chat.")
+    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+        st.warning("Set the GEMINI_API_KEY environment variable and restart the app to use the chat.")
     else:
         chat_log = st.session_state.setdefault("chat_log", [])              # what is shown on screen
-        agent_history = st.session_state.setdefault("agent_history", [])    # what is sent back to Claude
+        agent_history = st.session_state.setdefault("agent_history", [])    # what is sent back to Gemini
 
         for entry in chat_log:
             with st.chat_message(entry["role"]):
@@ -257,19 +257,16 @@ with tab6:
             try:
                 with st.spinner("Thinking..."):
                     result = agent.run_agent(prompt, conversation_history=agent_history, verbose=False)
-            except anthropic.AuthenticationError:
-                st.error("The API key was rejected. Check ANTHROPIC_API_KEY and restart the app.")
-            except anthropic.APIError as e:
-                st.error(f"The agent could not answer: {e}")
+            except genai_errors.APIError as e:
+                if e.code == 429:
+                    st.error("The free tier's rate limit was hit. Wait a minute and try again.")
+                elif e.code in (400, 401, 403):
+                    st.error(f"Gemini rejected the request. Check GEMINI_API_KEY and restart the app. ({e.message})")
+                else:
+                    st.error(f"The agent could not answer: {e}")
             else:
-                # Everything after the user's message in this turn is new; pull out the tool calls
-                new_messages = result["conversation_history"][len(agent_history) + 1:]
-                tool_calls = [
-                    {"name": block.name, "input": block.input}
-                    for message in new_messages if message["role"] == "assistant"
-                    for block in message["content"] if block.type == "tool_use"
-                ]
                 chat_log.append({"role": "user", "text": prompt})
-                chat_log.append({"role": "assistant", "text": result["final_response"], "tool_calls": tool_calls})
+                chat_log.append({"role": "assistant", "text": result["final_response"],
+                                 "tool_calls": result["tool_calls"]})
                 st.session_state["agent_history"] = result["conversation_history"]
                 st.rerun()

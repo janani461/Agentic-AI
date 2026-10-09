@@ -2,30 +2,31 @@
 Module 6: Agent Orchestration
 ---------------------------------
 This is the actual "agent brain." Unlike Modules 1-5 (which are just
-deterministic functions), this module lets an LLM (Claude) decide:
+deterministic functions), this module lets an LLM (Google Gemini) decide:
     - which tool(s) to call
     - in what order
     - whether to call a tool at all, or just answer from context/memory
 
 This is what makes the system an AGENT instead of a script. The LLM is
-given the 3 tool schemas + a system prompt describing its role, and for
+given the tool schemas + a system prompt describing its role, and for
 every user message, it reasons about what it needs before answering.
 
 Flow:
     1. User sends a message (e.g. "what should I focus on today?")
-    2. Claude decides: does it need to call a tool? Which one(s)?
-    3. If yes -> we execute the real Python function -> feed result back to Claude
-    4. Claude may decide it needs ANOTHER tool call based on that result
-    5. Once Claude has enough info, it gives a final natural-language answer
+    2. Gemini decides: does it need to call a tool? Which one(s)?
+    3. If yes -> we execute the real Python function -> feed result back to Gemini
+    4. Gemini may decide it needs ANOTHER tool call based on that result
+    5. Once Gemini has enough info, it gives a final natural-language answer
 
-Requires: pip install anthropic
-Requires: an API key set as an environment variable ANTHROPIC_API_KEY
+Requires: pip install google-genai
+Requires: a free API key from https://aistudio.google.com set as the
+          environment variable GEMINI_API_KEY
 """
 
 import os
-import json
 from datetime import date
-import anthropic
+from google import genai
+from google.genai import types
 
 import deadline_tool as dt
 import availability_tool as at
@@ -36,8 +37,17 @@ import negotiation_tool as nt
 # ---------------------------------------------------------------------
 # Client setup
 # ---------------------------------------------------------------------
-client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-MODEL = "claude-sonnet-4-5-20250929"  # any current Claude model with tool use works
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")  # free-tier model with tool use
+
+_client = None
+
+
+def get_client():
+    """Creates the Gemini client on first use, so importing this module never needs a key."""
+    global _client
+    if _client is None:
+        _client = genai.Client()  # reads GEMINI_API_KEY from the environment
+    return _client
 
 # ---------------------------------------------------------------------
 # Register all tools (schemas from Modules 2, 3, 4, 5, 7)
@@ -70,6 +80,17 @@ TOOL_FUNCTIONS = {
     "get_negotiation_options": nt.get_negotiation_options,
     "log_recommendation": nt.log_recommendation,
 }
+
+# The modules describe each tool as {name, description, input_schema};
+# Gemini takes the same three things as a FunctionDeclaration
+GEMINI_TOOLS = [types.Tool(function_declarations=[
+    types.FunctionDeclaration(
+        name=schema["name"],
+        description=schema["description"],
+        parameters_json_schema=schema["input_schema"],
+    )
+    for schema in ALL_TOOL_SCHEMAS
+])]
 
 SYSTEM_PROMPT = """You are a Personal Deadline Negotiator Agent. Your job is to help
 the user manage competing deadlines given their real available time and their
@@ -121,7 +142,7 @@ def call_tool(tool_name: str, tool_input: dict) -> dict:
 
 def run_agent(user_message: str, conversation_history: list = None, verbose: bool = True) -> dict:
     """
-    Sends a user message to the agent, letting Claude decide tool calls
+    Sends a user message to the agent, letting Gemini decide tool calls
     dynamically until it produces a final natural-language answer.
 
     Args:
@@ -130,52 +151,63 @@ def run_agent(user_message: str, conversation_history: list = None, verbose: boo
         verbose: if True, prints each tool call as it happens (useful for demo)
 
     Returns:
-        dict with the final text response and the full updated conversation history
+        dict with the final text response, the full updated conversation
+        history, and the list of tool calls made while answering
     """
     messages = conversation_history[:] if conversation_history else []
-    messages.append({"role": "user", "content": user_message})
+    messages.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
 
-    # Loop: keep going as long as Claude wants to call tools
+    config = types.GenerateContentConfig(
+        system_instruction=build_system_prompt(),
+        tools=GEMINI_TOOLS,
+    )
+    tool_calls = []
+
+    # Loop: keep going as long as Gemini wants to call tools
     while True:
-        response = client.messages.create(
+        response = get_client().models.generate_content(
             model=MODEL,
-            max_tokens=16000,  # roomy ceiling so a tool call is never cut off mid-way
-            system=build_system_prompt(),
-            tools=ALL_TOOL_SCHEMAS,
-            messages=messages,
+            contents=messages,
+            config=config,
         )
 
-        # Did Claude decide to call any tools this turn?
-        tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+        # Keep Gemini's own turn in the history exactly as it came back
+        if response.candidates and response.candidates[0].content:
+            messages.append(response.candidates[0].content)
 
-        if not tool_use_blocks:
-            # No more tools needed -> Claude has given its final answer
-            final_text = "".join(b.text for b in response.content if b.type == "text")
-            messages.append({"role": "assistant", "content": response.content})
-            return {"final_response": final_text, "conversation_history": messages}
+        # Did Gemini decide to call any tools this turn?
+        function_calls = response.function_calls or []
 
-        # Claude wants to call one or more tools -> execute them for real
-        messages.append({"role": "assistant", "content": response.content})
+        if not function_calls:
+            # No more tools needed -> Gemini has given its final answer
+            return {
+                "final_response": response.text or "(The model returned no answer.)",
+                "conversation_history": messages,
+                "tool_calls": tool_calls,
+            }
 
+        # Gemini wants to call one or more tools -> execute them for real
         tool_results = []
-        for block in tool_use_blocks:
+        for call in function_calls:
+            tool_input = dict(call.args or {})
             if verbose:
-                print(f"   🔧 Agent is calling: {block.name}({block.input})")
+                print(f"   🔧 Agent is calling: {call.name}({tool_input})")
 
-            result = call_tool(block.name, block.input)
+            result = call_tool(call.name, tool_input)
 
             if verbose:
                 print(f"      -> {result}")
 
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": json.dumps(result),
-            })
+            tool_calls.append({"name": call.name, "input": tool_input})
+            tool_results.append(types.Part(function_response=types.FunctionResponse(
+                id=call.id,
+                name=call.name,
+                response=result,
+            )))
 
-        # Feed tool results back to Claude so it can decide the next step
-        messages.append({"role": "user", "content": tool_results})
-        # loop continues -> Claude either calls more tools or gives final answer
+        # Feed tool results back to Gemini so it can decide the next step
+        messages.append(types.Content(role="user", parts=tool_results))
+        # loop continues -> Gemini either calls more tools or gives final answer
 
 
 # ---------------------------------------------------------------------
