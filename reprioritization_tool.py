@@ -85,6 +85,7 @@ def check_feasibility(as_of_date: str = None) -> dict:
             "task_name": d["task_name"],
             "due_date": due,
             "priority": d["priority"],
+            "category": d["category"],
             "estimated_hours": d["estimated_hours"],
             "hours_needed_with_pace": hours_needed,
             "hours_available_before_due": hours_available,

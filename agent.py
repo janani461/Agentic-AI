@@ -21,6 +21,10 @@ Flow:
 Requires: pip install google-genai
 Requires: a free API key from https://aistudio.google.com set as the
           environment variable GEMINI_API_KEY
+
+No key? run_agent() then hands the message to the rule-based agent in
+rule_agent.py, which makes the same decisions with plain Python rules.
+The project runs in full either way.
 """
 
 import os
@@ -33,6 +37,7 @@ import availability_tool as at
 import reprioritization_tool as rt
 import memory as mem
 import negotiation_tool as nt
+import rule_agent
 
 # ---------------------------------------------------------------------
 # Client setup
@@ -40,6 +45,15 @@ import negotiation_tool as nt
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")  # free-tier model with tool use
 
 _client = None
+
+
+def has_api_key() -> bool:
+    return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+
+
+def agent_mode() -> str:
+    """'gemini' when an API key is set, otherwise 'rules'."""
+    return "gemini" if has_api_key() else "rules"
 
 
 def get_client():
@@ -142,6 +156,28 @@ def call_tool(tool_name: str, tool_input: dict) -> dict:
 
 def run_agent(user_message: str, conversation_history: list = None, verbose: bool = True) -> dict:
     """
+    Answers one user message with whichever agent is available: Gemini
+    when an API key is set, the rule-based agent otherwise.
+
+    Args:
+        user_message: what the user typed
+        conversation_history: list of prior turns (optional, for multi-turn chat)
+        verbose: if True, prints each tool call as it happens (useful for demo)
+
+    Returns:
+        dict with the final text response, the full updated conversation
+        history, the list of tool calls made while answering, and the
+        mode that answered ('gemini' or 'rules')
+    """
+    mode = agent_mode()
+    run = run_gemini_agent if mode == "gemini" else rule_agent.run_rule_agent
+    result = run(user_message, conversation_history=conversation_history, verbose=verbose)
+    result["mode"] = mode
+    return result
+
+
+def run_gemini_agent(user_message: str, conversation_history: list = None, verbose: bool = True) -> dict:
+    """
     Sends a user message to the agent, letting Gemini decide tool calls
     dynamically until it produces a final natural-language answer.
 
@@ -233,6 +269,7 @@ if __name__ == "__main__":
     storage.set_memory("pace_multiplier", "1.5")
 
     print("=" * 60)
+    print(f"Mode: {agent_mode()}" + ("" if has_api_key() else " (no GEMINI_API_KEY set, using built-in rules)"))
     print("AGENT DEMO — type 'quit' to exit")
     print("=" * 60)
 

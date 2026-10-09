@@ -10,7 +10,6 @@ reprioritization_tool, memory, negotiation_tool) in a web interface, and
 adds a chat tab that talks to the agent (agent.py).
 """
 
-import os
 from google.genai import errors as genai_errors
 import streamlit as st
 import storage
@@ -238,35 +237,37 @@ with tab6:
     st.subheader("Chat with the Agent")
     st.caption("Ask in plain language. The agent decides which tools to call.")
 
-    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
-        st.warning("Set the GEMINI_API_KEY environment variable and restart the app to use the chat.")
+    if agent.agent_mode() == "gemini":
+        st.caption("🧠 Mode: Gemini language model")
     else:
-        chat_log = st.session_state.setdefault("chat_log", [])              # what is shown on screen
-        agent_history = st.session_state.setdefault("agent_history", [])    # what is sent back to Gemini
+        st.caption("⚙️ Mode: built-in rules (no GEMINI_API_KEY set). Type \"help\" to see what I understand.")
 
-        for entry in chat_log:
-            with st.chat_message(entry["role"]):
-                if entry.get("tool_calls"):
-                    with st.expander(f"🔧 Tools called: {len(entry['tool_calls'])}"):
-                        for call in entry["tool_calls"]:
-                            st.code(f"{call['name']}({call['input']})")
-                st.markdown(entry["text"])
+    chat_log = st.session_state.setdefault("chat_log", [])              # what is shown on screen
+    agent_history = st.session_state.setdefault("agent_history", [])    # what the agent gets back next turn
 
-        prompt = st.chat_input("e.g. What should I focus on today?")
-        if prompt:
-            try:
-                with st.spinner("Thinking..."):
-                    result = agent.run_agent(prompt, conversation_history=agent_history, verbose=False)
-            except genai_errors.APIError as e:
-                if e.code == 429:
-                    st.error("The free tier's rate limit was hit. Wait a minute and try again.")
-                elif e.code in (400, 401, 403):
-                    st.error(f"Gemini rejected the request. Check GEMINI_API_KEY and restart the app. ({e.message})")
-                else:
-                    st.error(f"The agent could not answer: {e}")
+    for entry in chat_log:
+        with st.chat_message(entry["role"]):
+            if entry.get("tool_calls"):
+                with st.expander(f"🔧 Tools called: {len(entry['tool_calls'])}"):
+                    for call in entry["tool_calls"]:
+                        st.code(f"{call['name']}({call['input']})")
+            st.markdown(entry["text"])
+
+    prompt = st.chat_input("e.g. What should I focus on today?")
+    if prompt:
+        try:
+            with st.spinner("Thinking..."):
+                result = agent.run_agent(prompt, conversation_history=agent_history, verbose=False)
+        except genai_errors.APIError as e:
+            if e.code == 429:
+                st.error("The free tier's rate limit was hit. Wait a minute and try again.")
+            elif e.code in (400, 401, 403):
+                st.error(f"Gemini rejected the request. Check GEMINI_API_KEY and restart the app. ({e.message})")
             else:
-                chat_log.append({"role": "user", "text": prompt})
-                chat_log.append({"role": "assistant", "text": result["final_response"],
-                                 "tool_calls": result["tool_calls"]})
-                st.session_state["agent_history"] = result["conversation_history"]
-                st.rerun()
+                st.error(f"The agent could not answer: {e}")
+        else:
+            chat_log.append({"role": "user", "text": prompt})
+            chat_log.append({"role": "assistant", "text": result["final_response"],
+                             "tool_calls": result["tool_calls"]})
+            st.session_state["agent_history"] = result["conversation_history"]
+            st.rerun()
