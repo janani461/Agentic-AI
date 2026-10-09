@@ -28,7 +28,8 @@ def set_availability(day: str, available_hours: float) -> dict:
         dict with status ("success" or "error") and a message.
     """
     try:
-        date.fromisoformat(day)
+        # fromisoformat also accepts forms like 20261015; store one format only
+        day = date.fromisoformat(day).isoformat()
     except (ValueError, TypeError):
         return {"status": "error", "message": "day must be in YYYY-MM-DD format."}
 
@@ -61,14 +62,14 @@ def get_availability(start_date: str = None, end_date: str = None) -> dict:
     """
     if start_date:
         try:
-            date.fromisoformat(start_date)
-        except ValueError:
+            start_date = date.fromisoformat(start_date).isoformat()
+        except (ValueError, TypeError):
             return {"status": "error", "message": "start_date must be in YYYY-MM-DD format."}
 
     if end_date:
         try:
-            date.fromisoformat(end_date)
-        except ValueError:
+            end_date = date.fromisoformat(end_date).isoformat()
+        except (ValueError, TypeError):
             return {"status": "error", "message": "end_date must be in YYYY-MM-DD format."}
 
     if start_date and end_date and start_date > end_date:

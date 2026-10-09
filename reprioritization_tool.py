@@ -40,11 +40,9 @@ def check_feasibility(as_of_date: str = None) -> dict:
             - risk_level ("safe" | "tight" | "at_risk")
         Sorted so the most urgent/at-risk deadlines come first.
     """
-    today = as_of_date or date.today().isoformat()
-
     try:
-        date.fromisoformat(today)
-    except ValueError:
+        today = date.fromisoformat(as_of_date).isoformat() if as_of_date else date.today().isoformat()
+    except (ValueError, TypeError):
         return {"status": "error", "message": "as_of_date must be in YYYY-MM-DD format."}
 
     pending = storage.get_deadlines(status="pending")

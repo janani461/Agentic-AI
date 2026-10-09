@@ -13,6 +13,7 @@ persists whatever it's given (with basic DB-level checks). This tool is
 the "gatekeeper" that makes sure only clean, sensible data gets in.
 """
 
+import math
 from datetime import date, timedelta
 import storage
 
@@ -48,10 +49,15 @@ def add_deadline(task_name: str, due_date: str, estimated_hours: float, priority
 
     if parsed_due < date.today():
         return {"status": "error", "message": "due_date cannot be in the past."}
+    # fromisoformat also accepts forms like 20261015; store one format only
+    due_date = parsed_due.isoformat()
 
     try:
         estimated_hours = float(estimated_hours)
     except (ValueError, TypeError):
+        return {"status": "error", "message": "estimated_hours must be a number."}
+
+    if not math.isfinite(estimated_hours):
         return {"status": "error", "message": "estimated_hours must be a number."}
 
     if estimated_hours <= 0:

@@ -15,6 +15,7 @@ This module does NOT decide what to DO with these facts (that's the agent's
 job in Module 6/7) — it only maintains and surfaces them.
 """
 
+import math
 from datetime import date, timedelta
 import storage
 
@@ -46,20 +47,33 @@ def record_outcome(deadline_id: int, actual_hours_taken: float, outcome: str) ->
         return {"status": "error", "message": "outcome must be 'met' or 'missed'."}
 
     try:
+        deadline_id = int(deadline_id)
+    except (ValueError, TypeError):
+        return {"status": "error", "message": "deadline_id must be an integer."}
+
+    try:
         actual_hours_taken = float(actual_hours_taken)
     except (ValueError, TypeError):
         return {"status": "error", "message": "actual_hours_taken must be a number."}
+
+    if not math.isfinite(actual_hours_taken) or actual_hours_taken < 0:
+        return {"status": "error", "message": "actual_hours_taken must be 0 or more."}
 
     deadlines = storage.get_deadlines()
     matching = next((d for d in deadlines if d["deadline_id"] == deadline_id), None)
     if not matching:
         return {"status": "error", "message": f"No deadline found with id {deadline_id}."}
 
+    # One outcome per deadline, or the same task would count twice in the pace and the track record
+    if deadline_id in get_recorded_deadline_ids():
+        return {"status": "error", "message": f"An outcome is already recorded for '{matching['task_name']}'."}
+
     estimated = matching["estimated_hours"]
 
     # Update pace_multiplier as a rolling average with the new data point.
     # Simple approach: blend old pace with this task's actual/estimated ratio.
-    if estimated > 0:
+    # A task that was never started (0h) says nothing about pace.
+    if estimated > 0 and actual_hours_taken > 0:
         this_task_ratio = actual_hours_taken / estimated
         old_pace = get_pace_multiplier()
         # weight new data at 30% so one outlier task doesn't swing it wildly
@@ -89,6 +103,11 @@ def get_pace_multiplier() -> float:
     """Returns the learned pace multiplier, or the default if none learned yet."""
     raw = storage.get_memory("pace_multiplier")
     return float(raw) if raw else DEFAULT_PACE_MULTIPLIER
+
+
+def get_recorded_deadline_ids() -> set:
+    """Returns the ids of deadlines that already have a met/missed outcome recorded."""
+    return {h["deadline_id"] for h in storage.get_history() if h["outcome"] in ("met", "missed")}
 
 
 def get_reliability_summary() -> dict:

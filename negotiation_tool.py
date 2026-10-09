@@ -26,10 +26,9 @@ from reprioritization_tool import PRIORITY_WEIGHT
 
 def _resolve_today(as_of_date: str = None):
     """Returns (today_iso, None) or (None, error_dict) if as_of_date is malformed."""
-    today = as_of_date or date.today().isoformat()
     try:
-        date.fromisoformat(today)
-    except ValueError:
+        today = date.fromisoformat(as_of_date).isoformat() if as_of_date else date.today().isoformat()
+    except (ValueError, TypeError):
         return None, {"status": "error", "message": "as_of_date must be in YYYY-MM-DD format."}
     return today, None
 
@@ -169,6 +168,7 @@ def get_negotiation_options(as_of_date: str = None) -> dict:
         }
 
     negotiations = []
+    deferral_claimed = {}  # deadline_id -> hours already promised to an earlier at-risk task
     for t in short_tasks:
         shortfall = t["shortfall"]
         due = t["due_date"]
@@ -179,7 +179,8 @@ def get_negotiation_options(as_of_date: str = None) -> dict:
         for other in tasks:
             if PRIORITY_WEIGHT.get(other["priority"], 0) >= PRIORITY_WEIGHT.get(t["priority"], 0):
                 continue
-            hours_held = round(sum(h for day, h in other["slots"].items() if day <= due), 2)
+            hours_held = round(sum(h for day, h in other["slots"].items() if day <= due)
+                               - deferral_claimed.get(other["deadline_id"], 0.0), 2)
             if hours_held > 0:
                 donors.append({
                     "deadline_id": other["deadline_id"],
@@ -197,6 +198,14 @@ def get_negotiation_options(as_of_date: str = None) -> dict:
                 "hours_freed": hours_freed,
                 "covers_shortfall": hours_freed >= shortfall,
             })
+            # Same rule as the extension below: hours are only claimed if they fully
+            # cover the shortfall, so two at-risk tasks are never promised the same hours.
+            if hours_freed >= shortfall:
+                to_claim = shortfall
+                for d in donors:
+                    claim = min(d["hours_freed"], to_claim)
+                    deferral_claimed[d["deadline_id"]] = deferral_claimed.get(d["deadline_id"], 0.0) + claim
+                    to_claim = round(to_claim - claim, 2)
 
         # Option: ask for an extension, using free hours logged after the due date.
         # Hours are only claimed if they fully cover the shortfall, so two at-risk
@@ -278,7 +287,18 @@ def log_recommendation(deadline_id: int, recommendation: str) -> dict:
     if not matching:
         return {"status": "error", "message": f"No deadline found with id {deadline_id}."}
 
-    storage.add_history_record(recommendation.strip(), deadline_id=deadline_id)
+    recommendation = recommendation.strip()
+
+    # Asking the same question twice should not log the same advice twice
+    earlier = [h for h in storage.get_history()
+               if h["deadline_id"] == deadline_id and h["outcome"] == "unknown"]
+    if earlier and max(earlier, key=lambda h: h["history_id"])["recommendation"] == recommendation:
+        return {
+            "status": "success",
+            "message": f"That recommendation for '{matching['task_name']}' is already logged.",
+        }
+
+    storage.add_history_record(recommendation, deadline_id=deadline_id)
     return {
         "status": "success",
         "message": f"Logged recommendation for '{matching['task_name']}'.",

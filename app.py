@@ -10,7 +10,12 @@ reprioritization_tool, memory, negotiation_tool) in a web interface, and
 adds a chat tab that talks to the agent (agent.py).
 """
 
-from google.genai import errors as genai_errors
+try:
+    from google.genai.errors import APIError
+except ImportError:  # the rule-based agent runs without the package
+    class APIError(Exception):
+        pass
+
 import streamlit as st
 import storage
 import deadline_tool as dt
@@ -191,9 +196,20 @@ with tab5:
     st.subheader("Record a Completed/Missed Deadline")
     st.caption("This teaches the agent your real work pace.")
 
-    deadlines_list = dt.get_deadlines()["deadlines"]
-    if not deadlines_list:
+    # Shown after the rerun that follows a recorded outcome
+    flash = st.session_state.pop("outcome_flash", None)
+    if flash:
+        st.success(flash["message"])
+        st.info(f"Updated pace multiplier: **{flash['pace']}x**")
+
+    # A deadline gets one outcome, so those already recorded are not offered again
+    recorded_ids = mem.get_recorded_deadline_ids()
+    all_deadlines = dt.get_deadlines()["deadlines"]
+    deadlines_list = [d for d in all_deadlines if d["deadline_id"] not in recorded_ids]
+    if not all_deadlines:
         st.info("Add a deadline first in Tab 1.")
+    elif not deadlines_list:
+        st.info("Every deadline already has an outcome recorded.")
     else:
         options = {f"#{d['deadline_id']} - {d['task_name']}": d["deadline_id"] for d in deadlines_list}
         selected_label = st.selectbox("Select deadline", list(options.keys()))
@@ -208,8 +224,10 @@ with tab5:
         if st.button("Record Outcome", type="primary"):
             result = mem.record_outcome(selected_id, actual_hours, outcome)
             if result["status"] == "success":
-                st.success(result["message"])
-                st.info(f"Updated pace multiplier: **{result['updated_pace_multiplier']}x**")
+                # rerun so the sidebar pace, the deadlines table and the plan all show the new state
+                st.session_state["outcome_flash"] = {"message": result["message"],
+                                                     "pace": result["updated_pace_multiplier"]}
+                st.rerun()
             else:
                 st.error(result["message"])
 
@@ -240,7 +258,7 @@ with tab6:
     if agent.agent_mode() == "gemini":
         st.caption("🧠 Mode: Gemini language model")
     else:
-        st.caption("⚙️ Mode: built-in rules (no GEMINI_API_KEY set). Type \"help\" to see what I understand.")
+        st.caption(f"⚙️ Mode: built-in rules ({agent.rules_reason()}). Type \"help\" to see what I understand.")
 
     chat_log = st.session_state.setdefault("chat_log", [])              # what is shown on screen
     agent_history = st.session_state.setdefault("agent_history", [])    # what the agent gets back next turn
@@ -255,19 +273,26 @@ with tab6:
 
     prompt = st.chat_input("e.g. What should I focus on today?")
     if prompt:
+        error = None
         try:
             with st.spinner("Thinking..."):
                 result = agent.run_agent(prompt, conversation_history=agent_history, verbose=False)
-        except genai_errors.APIError as e:
+        except APIError as e:
             if e.code == 429:
-                st.error("The free tier's rate limit was hit. Wait a minute and try again.")
+                error = "The free tier's rate limit was hit. Wait a minute and try again."
             elif e.code in (400, 401, 403):
-                st.error(f"Gemini rejected the request. Check GEMINI_API_KEY and restart the app. ({e.message})")
+                error = f"Gemini rejected the request. Check GEMINI_API_KEY and restart the app. ({e.message})"
             else:
-                st.error(f"The agent could not answer: {e}")
+                error = f"The agent could not answer: {e}"
+        except Exception as e:  # e.g. no network: keep the chat usable instead of a traceback
+            error = f"The agent could not answer: {e}"
+
+        # The message stays in the chat either way, so nothing typed is lost
+        chat_log.append({"role": "user", "text": prompt})
+        if error:
+            chat_log.append({"role": "assistant", "text": f"⚠️ {error}"})
         else:
-            chat_log.append({"role": "user", "text": prompt})
             chat_log.append({"role": "assistant", "text": result["final_response"],
                              "tool_calls": result["tool_calls"]})
             st.session_state["agent_history"] = result["conversation_history"]
-            st.rerun()
+        st.rerun()

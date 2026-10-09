@@ -117,16 +117,22 @@ def add_deadline(task_name: str, due_date: str, estimated_hours: float, priority
         )
 
 
+# Earliest due date first; on the same day the higher priority goes first
+_DEADLINE_ORDER = """ORDER BY due_date,
+                     CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                     deadline_id"""
+
+
 def get_deadlines(status: str = None):
     """Fetch all deadlines, optionally filtered by status (pending/done/missed)."""
     with get_connection() as conn:
         if status:
             rows = conn.execute(
-                "SELECT * FROM deadlines WHERE status = ? ORDER BY due_date", (status,)
+                f"SELECT * FROM deadlines WHERE status = ? {_DEADLINE_ORDER}", (status,)
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM deadlines ORDER BY due_date"
+                f"SELECT * FROM deadlines {_DEADLINE_ORDER}"
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -153,17 +159,18 @@ def set_availability(day: str, available_hours: float):
 
 
 def get_availability(start_date: str = None, end_date: str = None):
-    """Fetch availability rows, optionally within a date range (inclusive)."""
+    """Fetch availability rows, optionally within a date range (inclusive). Either bound can be left out."""
+    conditions, params = [], []
+    if start_date:
+        conditions.append("date >= ?")
+        params.append(start_date)
+    if end_date:
+        conditions.append("date <= ?")
+        params.append(end_date)
+    where = f"WHERE {' AND '.join(conditions)} " if conditions else ""
+
     with get_connection() as conn:
-        if start_date and end_date:
-            rows = conn.execute(
-                "SELECT * FROM availability WHERE date BETWEEN ? AND ? ORDER BY date",
-                (start_date, end_date),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM availability ORDER BY date"
-            ).fetchall()
+        rows = conn.execute(f"SELECT * FROM availability {where}ORDER BY date", params).fetchall()
         return [dict(r) for r in rows]
 
 

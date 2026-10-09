@@ -29,8 +29,12 @@ The project runs in full either way.
 
 import os
 from datetime import date
-from google import genai
-from google.genai import types
+
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:  # the rule-based agent runs without the package
+    genai = types = None
 
 import deadline_tool as dt
 import availability_tool as at
@@ -43,6 +47,7 @@ import rule_agent
 # Client setup
 # ---------------------------------------------------------------------
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")  # free-tier model with tool use
+MAX_TOOL_ROUNDS = 10  # stop a model that keeps asking for tools instead of answering
 
 _client = None
 
@@ -52,8 +57,13 @@ def has_api_key() -> bool:
 
 
 def agent_mode() -> str:
-    """'gemini' when an API key is set, otherwise 'rules'."""
-    return "gemini" if has_api_key() else "rules"
+    """'gemini' when an API key is set and google-genai is installed, otherwise 'rules'."""
+    return "gemini" if has_api_key() and genai is not None else "rules"
+
+
+def rules_reason() -> str:
+    """Why the rule-based agent is the one running."""
+    return "no GEMINI_API_KEY set" if not has_api_key() else "google-genai is not installed"
 
 
 def get_client():
@@ -104,7 +114,7 @@ GEMINI_TOOLS = [types.Tool(function_declarations=[
         parameters_json_schema=schema["input_schema"],
     )
     for schema in ALL_TOOL_SCHEMAS
-])]
+])] if types else None
 
 SYSTEM_PROMPT = """You are a Personal Deadline Negotiator Agent. Your job is to help
 the user manage competing deadlines given their real available time and their
@@ -200,7 +210,7 @@ def run_gemini_agent(user_message: str, conversation_history: list = None, verbo
     tool_calls = []
 
     # Loop: keep going as long as Gemini wants to call tools
-    while True:
+    for _ in range(MAX_TOOL_ROUNDS):
         response = get_client().models.generate_content(
             model=MODEL,
             contents=messages,
@@ -227,12 +237,12 @@ def run_gemini_agent(user_message: str, conversation_history: list = None, verbo
         for call in function_calls:
             tool_input = dict(call.args or {})
             if verbose:
-                print(f"   🔧 Agent is calling: {call.name}({tool_input})")
+                rule_agent.say(f"   🔧 Agent is calling: {call.name}({tool_input})")
 
             result = call_tool(call.name, tool_input)
 
             if verbose:
-                print(f"      -> {result}")
+                rule_agent.say(f"      -> {result}")
 
             tool_calls.append({"name": call.name, "input": tool_input})
             tool_results.append(types.Part(function_response=types.FunctionResponse(
@@ -245,13 +255,22 @@ def run_gemini_agent(user_message: str, conversation_history: list = None, verbo
         messages.append(types.Content(role="user", parts=tool_results))
         # loop continues -> Gemini either calls more tools or gives final answer
 
+    return {
+        "final_response": f"(Stopped after {MAX_TOOL_ROUNDS} rounds of tool calls without a final answer. "
+                          f"Try asking again more specifically.)",
+        "conversation_history": messages,
+        "tool_calls": tool_calls,
+    }
+
 
 # ---------------------------------------------------------------------
 # Quick interactive test when run directly
 # ---------------------------------------------------------------------
 if __name__ == "__main__":
+    import sys
     from datetime import timedelta
     import storage
+    sys.stdout.reconfigure(encoding="utf-8")  # the replies use emoji, also when output is redirected
     storage.init_db()
     storage.reset_db()
 
@@ -269,7 +288,7 @@ if __name__ == "__main__":
     storage.set_memory("pace_multiplier", "1.5")
 
     print("=" * 60)
-    print(f"Mode: {agent_mode()}" + ("" if has_api_key() else " (no GEMINI_API_KEY set, using built-in rules)"))
+    print(f"Mode: {agent_mode()}" + ("" if agent_mode() == "gemini" else f" ({rules_reason()}, using built-in rules)"))
     print("AGENT DEMO — type 'quit' to exit")
     print("=" * 60)
 

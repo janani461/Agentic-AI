@@ -166,8 +166,8 @@ _NAME_LEAD = re.compile(
 )
 # The task name ends where the details start
 _NAME_END = re.compile(
-    r"\bdue\b|\bby\b|[,;(]|" + HOURS_PATTERN + r"|\b(?:high|medium|low|top)\s+priority\b|"
-    r"\b(?:priority|estimated|est|takes?|needs?|will take|which|that|urgent)\b",
+    r"\bdue\b|[,;(]|" + HOURS_PATTERN + r"|\b(?:high|medium|low|top)\s+priority\b|"
+    r"\b(?:priority|estimated|est|takes?|needs?|will take|urgent)\b",
     re.IGNORECASE,
 )
 
@@ -178,7 +178,15 @@ def parse_task_name(message: str, date_span) -> str:
     if quoted:
         return quoted.group(1).strip()
 
+    # the date can come first, as in "Tomorrow I have a physics exam"
+    if date_span and not message[:date_span[0]].strip(" ,"):
+        message, date_span = message[date_span[1]:].lstrip(" ,"), None
+
     start = _NAME_LEAD.match(message).end()
+    # so can the estimate, as in "a 5 hour DBMS assignment"
+    hours_first = re.match(HOURS_PATTERN + r"\s*", message[start:], re.IGNORECASE)
+    if hours_first:
+        start += hours_first.end()
     rest = message[start:]
 
     end = len(rest)
@@ -189,8 +197,9 @@ def parse_task_name(message: str, date_span) -> str:
         end = min(end, date_span[0] - start)
 
     name = rest[:end]
-    # drop the joining words left behind, as in "physics exam on [Friday]"
-    name = re.sub(r"(?:\s+(?:on|for|at|in|this|next|is|it|around|about))+\s*$", "", name, flags=re.IGNORECASE)
+    # drop the joining words left behind, as in "physics exam on [Friday]" or "essay that [takes 3 hours]"
+    name = re.sub(r"(?:\s+(?:on|for|at|in|by|this|next|is|it|around|about|that|which))+\s*$", "", name,
+                  flags=re.IGNORECASE)
     return name.strip(" .:-")
 
 
@@ -231,6 +240,14 @@ def find_deadline(message: str, deadlines: list):
 # ---------------------------------------------------------------------
 # Tool calling: every call goes through here so it can be shown and logged
 # ---------------------------------------------------------------------
+def say(text: str):
+    """print() that survives a console or redirected file that cannot encode emoji (cp1252 on Windows)."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        print(text.encode("ascii", "replace").decode())
+
+
 class _Turn:
     """Collects the tool calls made while answering one message."""
 
@@ -240,10 +257,10 @@ class _Turn:
 
     def call(self, func, **tool_input):
         if self.verbose:
-            print(f"   🔧 Agent is calling: {func.__name__}({tool_input})")
+            say(f"   🔧 Agent is calling: {func.__name__}({tool_input})")
         result = func(**tool_input)
         if self.verbose:
-            print(f"      -> {result}")
+            say(f"      -> {result}")
         self.tool_calls.append({"name": func.__name__, "input": tool_input})
         return result
 
@@ -356,7 +373,9 @@ def _record_outcome(turn: _Turn, message: str) -> str:
         return (f"How many hours did '{match['task_name']}' actually take? Tell me in one message, "
                 f"for example: \"I finished #{match['deadline_id']}, it took 6 hours\".")
 
-    missed = re.search(r"\b(missed|failed|didn'?t|did not|couldn'?t|could not)\b", message.lower())
+    # "didn't" alone is not enough: "it didn't take long" is not a missed deadline
+    missed = re.search(r"\b(missed|failed)\b|\b(didn'?t|did not|couldn'?t|could not)\s+(?:\w+\s+){0,2}?"
+                       r"(finish|complete|submit|make|do|hand|get)\b", message.lower())
     result = turn.call(mem.record_outcome, deadline_id=match["deadline_id"],
                        actual_hours_taken=hours, outcome="missed" if missed else "met")
     if result["status"] != "success":
@@ -406,7 +425,8 @@ def _focus(turn: _Turn, message: str) -> str:
                      f"{r['hours_available_before_due']}h available. {RISK_LABEL[r['risk_level']]}")
 
     if not result["at_risk_tasks"]:
-        first = result["results"][0]
+        first = min(result["results"], key=lambda r: (
+            r["hours_available_before_due"] - r["hours_needed_with_pace"], r["due_date"]))
         lines += ["", f"Nothing is at risk. Start with **{first['task_name']}**, which has the least slack."]
         return "\n".join(lines)
 
@@ -501,7 +521,10 @@ def detect_intent(message: str):
     if re.search(r"\b(finished|completed|done with|submitted|handed in|missed|failed to)\b", lower):
         return _record_outcome
 
-    if has_hours and re.search(r"\b(free|available|availability|spare)\b", lower) and "due" not in lower:
+    if has_hours and re.search(r"\b(free|available|availability|spare)\b", lower) and not re.search(r"\bdue\b", lower):
+        # "Do I have 3 hours free tomorrow?" asks; "Can you log 3 free hours tomorrow?" tells
+        if is_question and not re.search(r"\b(log|set|add|mark|put|record|note|save)\b", lower):
+            return _list_availability
         return _set_availability
 
     if re.search(_ADD_VERB, lower):
@@ -562,7 +585,9 @@ def run_rule_agent(user_message: str, conversation_history: list = None, verbose
 # Quick self-test when run directly
 # ---------------------------------------------------------------------
 if __name__ == "__main__":
+    import sys
     import storage
+    sys.stdout.reconfigure(encoding="utf-8")  # the replies use emoji, also when output is redirected
     storage.init_db()
     storage.reset_db()
 
