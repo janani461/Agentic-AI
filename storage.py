@@ -4,7 +4,7 @@ Module 1: Data Storage Module
 Handles all persistence for the Personal Deadline Negotiator Agent.
 Uses SQLite (file-based, zero setup) with 4 tables:
 
-    - deadlines    : tasks/assignments with due dates, estimated effort, priority
+    - deadlines    : tasks/assignments with due dates, estimated effort, priority, category
     - availability : how many free hours the user has on a given day
     - memory       : long-term learned facts about the user (pace, patterns)
     - history      : log of past agent recommendations and outcomes
@@ -52,7 +52,8 @@ def init_db():
                 estimated_hours   REAL NOT NULL,
                 priority          TEXT NOT NULL CHECK (priority IN ('low', 'medium', 'high')),
                 status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done', 'missed')),
-                created_on        TEXT NOT NULL
+                created_on        TEXT NOT NULL,
+                category          TEXT NOT NULL DEFAULT 'other'
             );
 
             CREATE TABLE IF NOT EXISTS availability (
@@ -79,6 +80,11 @@ def init_db():
             """
         )
 
+        # Databases created before the category column existed get it added here
+        columns = [row["name"] for row in conn.execute("PRAGMA table_info(deadlines)")]
+        if "category" not in columns:
+            conn.execute("ALTER TABLE deadlines ADD COLUMN category TEXT NOT NULL DEFAULT 'other'")
+
 
 # ---------------------------------------------------------------------
 # Reset (useful before demos / repeated testing)
@@ -88,10 +94,11 @@ def reset_db():
     with get_connection() as conn:
         conn.executescript(
             """
+            DELETE FROM history;  -- first: its rows reference deadlines
             DELETE FROM deadlines;
             DELETE FROM availability;
             DELETE FROM memory;
-            DELETE FROM history;
+            DELETE FROM sqlite_sequence;  -- restart AUTOINCREMENT ids from 1
             """
         )
     print("Database reset: all tables cleared.")
@@ -100,12 +107,13 @@ def reset_db():
 # ---------------------------------------------------------------------
 # Deadlines
 # ---------------------------------------------------------------------
-def add_deadline(task_name: str, due_date: str, estimated_hours: float, priority: str):
+def add_deadline(task_name: str, due_date: str, estimated_hours: float, priority: str,
+                 category: str = "other"):
     with get_connection() as conn:
         conn.execute(
-            """INSERT INTO deadlines (task_name, due_date, estimated_hours, priority, created_on)
-               VALUES (?, ?, ?, ?, ?)""",
-            (task_name, due_date, estimated_hours, priority, date.today().isoformat()),
+            """INSERT INTO deadlines (task_name, due_date, estimated_hours, priority, created_on, category)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (task_name, due_date, estimated_hours, priority, date.today().isoformat(), category),
         )
 
 

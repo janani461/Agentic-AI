@@ -13,14 +13,16 @@ persists whatever it's given (with basic DB-level checks). This tool is
 the "gatekeeper" that makes sure only clean, sensible data gets in.
 """
 
-from datetime import date
+from datetime import date, timedelta
 import storage
 
 VALID_PRIORITIES = {"low", "medium", "high"}
 VALID_STATUSES = {"pending", "done", "missed"}
+VALID_CATEGORIES = {"assignment", "exam", "presentation", "project", "other"}
 
 
-def add_deadline(task_name: str, due_date: str, estimated_hours: float, priority: str) -> dict:
+def add_deadline(task_name: str, due_date: str, estimated_hours: float, priority: str,
+                 category: str = "other") -> dict:
     """
     Adds a new deadline.
 
@@ -29,6 +31,9 @@ def add_deadline(task_name: str, due_date: str, estimated_hours: float, priority
         due_date: ISO date string (YYYY-MM-DD)
         estimated_hours: how many hours the user thinks it will take
         priority: 'low', 'medium', or 'high'
+        category: kind of work ('assignment', 'exam', 'presentation',
+                  'project', or 'other'). Memory (Module 5) uses this to
+                  spot which kinds of deadline the user tends to miss.
 
     Returns:
         dict with status ("success" or "error") and a message.
@@ -56,12 +61,16 @@ def add_deadline(task_name: str, due_date: str, estimated_hours: float, priority
     if priority not in VALID_PRIORITIES:
         return {"status": "error", "message": f"priority must be one of {sorted(VALID_PRIORITIES)}."}
 
-    storage.add_deadline(task_name.strip(), due_date, estimated_hours, priority)
+    category = category.lower().strip() if category else "other"
+    if category not in VALID_CATEGORIES:
+        return {"status": "error", "message": f"category must be one of {sorted(VALID_CATEGORIES)}."}
+
+    storage.add_deadline(task_name.strip(), due_date, estimated_hours, priority, category)
 
     return {
         "status": "success",
         "message": f"Added deadline '{task_name}' due {due_date} "
-                   f"(est. {estimated_hours}h, priority: {priority})."
+                   f"(est. {estimated_hours}h, priority: {priority}, category: {category})."
     }
 
 
@@ -98,6 +107,9 @@ def update_deadline_status(deadline_id: int, status: str) -> dict:
     if status not in VALID_STATUSES:
         return {"status": "error", "message": f"status must be one of {sorted(VALID_STATUSES)}."}
 
+    if not any(d["deadline_id"] == deadline_id for d in storage.get_deadlines()):
+        return {"status": "error", "message": f"No deadline found with id {deadline_id}."}
+
     storage.update_deadline_status(deadline_id, status)
     return {"status": "success", "message": f"Deadline {deadline_id} marked as '{status}'."}
 
@@ -116,6 +128,8 @@ ADD_DEADLINE_SCHEMA = {
             "due_date": {"type": "string", "description": "Due date in YYYY-MM-DD format"},
             "estimated_hours": {"type": "number", "description": "Estimated hours needed to complete it"},
             "priority": {"type": "string", "description": "Priority level", "enum": sorted(VALID_PRIORITIES)},
+            "category": {"type": "string", "description": "Kind of work (optional, defaults to 'other')",
+                         "enum": sorted(VALID_CATEGORIES)},
         },
         "required": ["task_name", "due_date", "estimated_hours", "priority"],
     },
@@ -155,17 +169,25 @@ if __name__ == "__main__":
     storage.init_db()
     storage.reset_db()
 
+    # dates are relative to today so the self-test never goes stale
+    def days_from_now(n):
+        return (date.today() + timedelta(days=n)).isoformat()
+
     # valid deadline
-    print(add_deadline("DBMS Assignment", "2026-09-10", estimated_hours=5, priority="high"))
+    print(add_deadline("DBMS Assignment", days_from_now(5), estimated_hours=5, priority="high"))
 
     # another valid deadline
-    print(add_deadline("Presentation Prep", "2026-09-08", estimated_hours=3, priority="medium"))
+    print(add_deadline("Presentation Prep", days_from_now(3), estimated_hours=3, priority="medium",
+                       category="presentation"))
+
+    # invalid category
+    print(add_deadline("Mystery Task", days_from_now(4), estimated_hours=2, priority="low", category="chores"))
 
     # invalid due_date format
     print(add_deadline("Bad Date Task", "10-09-2026", estimated_hours=2, priority="low"))
 
     # invalid priority
-    print(add_deadline("Urgent Task", "2026-09-09", estimated_hours=2, priority="urgent"))
+    print(add_deadline("Urgent Task", days_from_now(4), estimated_hours=2, priority="urgent"))
 
     # past due date
     print(add_deadline("Old Task", "2020-01-01", estimated_hours=1, priority="low"))
@@ -175,6 +197,9 @@ if __name__ == "__main__":
 
     print("\nMarking deadline 1 as done:")
     print(update_deadline_status(1, "done"))
+
+    # non-existent deadline id
+    print(update_deadline_status(999, "done"))
 
     print("\nAll deadlines after update:")
     print(get_deadlines())

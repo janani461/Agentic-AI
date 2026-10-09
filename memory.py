@@ -15,10 +15,15 @@ This module does NOT decide what to DO with these facts (that's the agent's
 job in Module 6/7) — it only maintains and surfaces them.
 """
 
-from datetime import date
+from datetime import date, timedelta
 import storage
 
 DEFAULT_PACE_MULTIPLIER = 1.0
+
+# A category counts as a weak spot once it has this many recorded outcomes
+# and at least this share of them were missed
+MIN_TRACKED_FOR_PATTERN = 2
+WEAK_SPOT_MISSED_RATE = 0.5
 
 
 # ---------------------------------------------------------------------
@@ -118,11 +123,53 @@ def get_reliability_summary() -> dict:
     }
 
 
+def get_category_patterns() -> dict:
+    """
+    Breaks the met/missed history down by deadline category, to surface
+    insights like "usually misses presentation-type deadlines".
+
+    A category is only flagged as a weak spot once it has at least
+    MIN_TRACKED_FOR_PATTERN outcomes, so one bad day isn't called a pattern.
+    """
+    category_by_id = {d["deadline_id"]: d["category"] for d in storage.get_deadlines()}
+
+    counts = {}
+    for h in storage.get_history():
+        if h["outcome"] not in ("met", "missed") or h["deadline_id"] not in category_by_id:
+            continue
+        entry = counts.setdefault(category_by_id[h["deadline_id"]], {"met": 0, "missed": 0})
+        entry[h["outcome"]] += 1
+
+    categories = []
+    for category, c in sorted(counts.items()):
+        total = c["met"] + c["missed"]
+        missed_rate = round(c["missed"] / total, 2)
+        categories.append({
+            "category": category,
+            "total_tracked": total,
+            "met_count": c["met"],
+            "missed_count": c["missed"],
+            "missed_rate": missed_rate,
+            "weak_spot": total >= MIN_TRACKED_FOR_PATTERN and missed_rate >= WEAK_SPOT_MISSED_RATE,
+        })
+
+    return {
+        "status": "success",
+        "categories": categories,
+        "weak_spots": [c["category"] for c in categories if c["weak_spot"]],
+    }
+
+
 def get_all_memory() -> dict:
-    """Returns every key-value fact currently stored in memory, plus a reliability summary."""
+    """Returns every key-value fact currently stored in memory, plus the derived insights."""
     facts = storage.get_memory()
     summary = get_reliability_summary()
-    return {"status": "success", "facts": facts, "reliability_summary": summary}
+    return {
+        "status": "success",
+        "facts": facts,
+        "reliability_summary": summary,
+        "category_patterns": get_category_patterns(),
+    }
 
 
 # ---------------------------------------------------------------------
@@ -147,8 +194,9 @@ RECORD_OUTCOME_SCHEMA = {
 GET_MEMORY_SCHEMA = {
     "name": "get_all_memory",
     "description": "Retrieve everything the agent has learned about the user so far: "
-                    "their pace multiplier and their deadline-reliability history "
-                    "(how often they meet vs miss deadlines).",
+                    "their pace multiplier, their deadline-reliability history "
+                    "(how often they meet vs miss deadlines), and which categories "
+                    "of deadline they tend to miss.",
     "input_schema": {"type": "object", "properties": {}, "required": []},
 }
 
@@ -160,9 +208,17 @@ if __name__ == "__main__":
     storage.init_db()
     storage.reset_db()
 
+    import json
     import deadline_tool as dt
-    dt.add_deadline("DBMS Assignment", "2026-09-10", estimated_hours=5, priority="high")
-    dt.add_deadline("Presentation Prep", "2026-09-08", estimated_hours=3, priority="medium")
+    # dates are relative to today so the self-test never goes stale
+    def days_from_now(n):
+        return (date.today() + timedelta(days=n)).isoformat()
+
+    dt.add_deadline("DBMS Assignment", days_from_now(5), estimated_hours=5, priority="high")
+    dt.add_deadline("Presentation Prep", days_from_now(3), estimated_hours=3, priority="medium",
+                    category="presentation")
+    dt.add_deadline("Seminar Talk", days_from_now(6), estimated_hours=2, priority="medium",
+                    category="presentation")
 
     print("Starting pace multiplier:", get_pace_multiplier())
 
@@ -174,7 +230,11 @@ if __name__ == "__main__":
     print(record_outcome(deadline_id=2, actual_hours_taken=4.5, outcome="missed"))
     print("Pace multiplier after 2nd outcome:", get_pace_multiplier())
 
-    import json
+    # A second missed presentation -> enough history to call it a pattern
+    print(record_outcome(deadline_id=3, actual_hours_taken=3, outcome="missed"))
+    print("\nCategory patterns:")
+    print(json.dumps(get_category_patterns(), indent=2))
+
     print("\nReliability summary:")
     print(json.dumps(get_reliability_summary(), indent=2))
 

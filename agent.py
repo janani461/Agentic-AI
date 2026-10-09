@@ -24,12 +24,14 @@ Requires: an API key set as an environment variable ANTHROPIC_API_KEY
 
 import os
 import json
+from datetime import date
 import anthropic
 
 import deadline_tool as dt
 import availability_tool as at
 import reprioritization_tool as rt
 import memory as mem
+import negotiation_tool as nt
 
 # ---------------------------------------------------------------------
 # Client setup
@@ -38,7 +40,7 @@ client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 MODEL = "claude-sonnet-4-5-20250929"  # any current Claude model with tool use works
 
 # ---------------------------------------------------------------------
-# Register all tools (schemas from Modules 2, 3, 4, 5)
+# Register all tools (schemas from Modules 2, 3, 4, 5, 7)
 # ---------------------------------------------------------------------
 ALL_TOOL_SCHEMAS = [
     dt.ADD_DEADLINE_SCHEMA,
@@ -49,6 +51,9 @@ ALL_TOOL_SCHEMAS = [
     rt.TOOL_SCHEMA,
     mem.RECORD_OUTCOME_SCHEMA,
     mem.GET_MEMORY_SCHEMA,
+    nt.BUILD_PLAN_SCHEMA,
+    nt.GET_NEGOTIATION_OPTIONS_SCHEMA,
+    nt.LOG_RECOMMENDATION_SCHEMA,
 ]
 
 # Map tool name -> actual Python function to call
@@ -61,6 +66,9 @@ TOOL_FUNCTIONS = {
     "check_feasibility": rt.check_feasibility,
     "record_outcome": mem.record_outcome,
     "get_all_memory": mem.get_all_memory,
+    "build_plan": nt.build_plan,
+    "get_negotiation_options": nt.get_negotiation_options,
+    "log_recommendation": nt.log_recommendation,
 }
 
 SYSTEM_PROMPT = """You are a Personal Deadline Negotiator Agent. Your job is to help
@@ -68,8 +76,9 @@ the user manage competing deadlines given their real available time and their
 personal work pace (which you learn over time from their history).
 
 You have access to tools for: adding/querying deadlines, logging/querying
-availability, checking feasibility of deadlines against available time, and
-recording outcomes to improve future predictions.
+availability, checking feasibility of deadlines against available time,
+building a day-by-day plan, listing negotiation options for deadlines that
+don't fit, and recording outcomes to improve future predictions.
 
 Behave like a thoughtful advisor, not a calculator:
 - Decide for yourself which tool(s) you need to call based on what the user is asking.
@@ -77,6 +86,13 @@ Behave like a thoughtful advisor, not a calculator:
 - If the user asks a prioritization question ("what should I focus on?", "am I going
   to make it?"), you likely need BOTH current deadlines/availability context AND the
   feasibility check — call check_feasibility, which already combines everything.
+- If a deadline is at risk, don't stop at the warning: call get_negotiation_options,
+  recommend ONE option and say why it beats the others (priority, how big the
+  shortfall is, how realistic an extension is), then save it with log_recommendation.
+- If the user asks for a schedule or what to do each day, call build_plan.
+- When adding a deadline, pick the category that fits the task (exam, presentation,
+  project, assignment) so memory can learn which kinds the user tends to miss. If
+  memory shows a weak-spot category, treat pending deadlines of that kind as riskier.
 - If the user is just logging data (adding a deadline, logging free hours), only
   call the relevant single tool — don't over-call.
 - When giving a final answer, don't just dump raw tool output. Explain your reasoning:
@@ -84,6 +100,12 @@ Behave like a thoughtful advisor, not a calculator:
   why you're recommending something.
 - Be concise and direct. This is a student under time pressure, not looking for essays.
 """
+
+
+def build_system_prompt() -> str:
+    """Adds today's date so the agent can turn "Friday" or "tomorrow" into YYYY-MM-DD."""
+    today = date.today()
+    return f"{SYSTEM_PROMPT}\nToday's date is {today.isoformat()} ({today.strftime('%A')})."
 
 
 def call_tool(tool_name: str, tool_input: dict) -> dict:
@@ -117,8 +139,8 @@ def run_agent(user_message: str, conversation_history: list = None, verbose: boo
     while True:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
+            max_tokens=16000,  # roomy ceiling so a tool call is never cut off mid-way
+            system=build_system_prompt(),
             tools=ALL_TOOL_SCHEMAS,
             messages=messages,
         )
@@ -160,17 +182,22 @@ def run_agent(user_message: str, conversation_history: list = None, verbose: boo
 # Quick interactive test when run directly
 # ---------------------------------------------------------------------
 if __name__ == "__main__":
+    from datetime import timedelta
     import storage
     storage.init_db()
     storage.reset_db()
 
+    # dates are relative to today so the seed data never goes stale
+    def days_from_now(n):
+        return (date.today() + timedelta(days=n)).isoformat()
+
     # Seed some realistic data so the agent has something to reason about
-    dt.add_deadline("DBMS Assignment", "2026-09-08", estimated_hours=5, priority="high")
-    dt.add_deadline("Presentation Prep", "2026-09-07", estimated_hours=3, priority="medium")
-    at.set_availability("2026-09-05", 2)
-    at.set_availability("2026-09-06", 2)
-    at.set_availability("2026-09-07", 1)
-    at.set_availability("2026-09-08", 2)
+    dt.add_deadline("DBMS Assignment", days_from_now(3), estimated_hours=5, priority="high")
+    dt.add_deadline("Presentation Prep", days_from_now(2), estimated_hours=3, priority="medium")
+    at.set_availability(days_from_now(0), 2)
+    at.set_availability(days_from_now(1), 2)
+    at.set_availability(days_from_now(2), 1)
+    at.set_availability(days_from_now(3), 2)
     storage.set_memory("pace_multiplier", "1.5")
 
     print("=" * 60)

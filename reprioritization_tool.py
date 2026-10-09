@@ -15,7 +15,7 @@ the deterministic feasibility math; the judgment/reasoning layer sits on
 top of it in Module 6/7.
 """
 
-from datetime import date
+from datetime import date, timedelta
 import storage
 
 # Priority weight used to break ties when multiple deadlines are at risk
@@ -34,7 +34,8 @@ def check_feasibility(as_of_date: str = None) -> dict:
     Returns:
         dict with status, and a list of deadlines each annotated with:
             - hours_needed (estimated_hours * pace_multiplier)
-            - hours_available (sum of availability up to due_date)
+            - hours_available (availability up to due_date, minus hours
+              already committed to deadlines that are due earlier)
             - feasible (bool)
             - risk_level ("safe" | "tight" | "at_risk")
         Sorted so the most urgent/at-risk deadlines come first.
@@ -55,14 +56,19 @@ def check_feasibility(as_of_date: str = None) -> dict:
     pace_multiplier = float(pace_raw) if pace_raw else 1.0
 
     results = []
+    # pending is ordered by due date, so each free hour is handed to the
+    # earliest deadline first and never counted twice
+    hours_committed = 0.0
     for d in pending:
         due = d["due_date"]
 
         # only count availability from today up to (and including) the due date
         avail_records = storage.get_availability(today, due)
-        hours_available = sum(r["available_hours"] for r in avail_records)
+        total_before_due = sum(r["available_hours"] for r in avail_records)
+        hours_available = round(max(0.0, total_before_due - hours_committed), 2)
 
         hours_needed = round(d["estimated_hours"] * pace_multiplier, 2)
+        hours_committed += min(hours_needed, hours_available)
 
         feasible = hours_available >= hours_needed
 
@@ -137,20 +143,24 @@ if __name__ == "__main__":
     import deadline_tool as dt
     import availability_tool as at
 
-    # Simulate a realistic squeeze: two deadlines, limited time
-    dt.add_deadline("DBMS Assignment", "2026-09-08", estimated_hours=5, priority="high")
-    dt.add_deadline("Presentation Prep", "2026-09-07", estimated_hours=3, priority="medium")
-    dt.add_deadline("Easy Quiz", "2026-09-12", estimated_hours=1, priority="low")
+    # dates are relative to today so the self-test never goes stale
+    def days_from_now(n):
+        return (date.today() + timedelta(days=n)).isoformat()
 
-    at.set_availability("2026-09-05", 2)
-    at.set_availability("2026-09-06", 2)
-    at.set_availability("2026-09-07", 1)
-    at.set_availability("2026-09-08", 2)
+    # Simulate a realistic squeeze: two deadlines, limited time
+    dt.add_deadline("DBMS Assignment", days_from_now(3), estimated_hours=5, priority="high")
+    dt.add_deadline("Presentation Prep", days_from_now(2), estimated_hours=3, priority="medium")
+    dt.add_deadline("Easy Quiz", days_from_now(7), estimated_hours=1, priority="low")
+
+    at.set_availability(days_from_now(0), 2)
+    at.set_availability(days_from_now(1), 2)
+    at.set_availability(days_from_now(2), 1)
+    at.set_availability(days_from_now(3), 2)
 
     # Simulate memory: user historically needs 1.5x their estimate
     storage.set_memory("pace_multiplier", "1.5")
 
-    result = check_feasibility(as_of_date="2026-09-05")
+    result = check_feasibility()
 
     import json
     print(json.dumps(result, indent=2))

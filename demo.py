@@ -15,6 +15,7 @@ Run this with: python demo.py
 """
 
 import json
+from datetime import date, timedelta
 import storage
 import deadline_tool as dt
 import availability_tool as at
@@ -32,6 +33,11 @@ def pretty(data):
     print(json.dumps(data, indent=2))
 
 
+def days_from_now(n):
+    """Dates are relative to today so the demo never goes stale."""
+    return (date.today() + timedelta(days=n)).isoformat()
+
+
 # =======================================================================
 # STEP 0: Reset everything for a clean demo
 # =======================================================================
@@ -45,9 +51,9 @@ storage.reset_db()
 # =======================================================================
 section("STEP 1: Adding deadlines (Deadline Tool)")
 
-print(dt.add_deadline("DBMS Assignment", "2026-09-08", estimated_hours=5, priority="high"))
-print(dt.add_deadline("Presentation Prep", "2026-09-07", estimated_hours=3, priority="medium"))
-print(dt.add_deadline("Easy Quiz", "2026-09-12", estimated_hours=1, priority="low"))
+print(dt.add_deadline("DBMS Assignment", days_from_now(3), estimated_hours=5, priority="high"))
+print(dt.add_deadline("Presentation Prep", days_from_now(2), estimated_hours=3, priority="medium"))
+print(dt.add_deadline("Easy Quiz", days_from_now(7), estimated_hours=1, priority="low"))
 
 print("\nCurrent pending deadlines:")
 pretty(dt.get_deadlines("pending"))
@@ -58,10 +64,10 @@ pretty(dt.get_deadlines("pending"))
 # =======================================================================
 section("STEP 2: Logging available free hours (Availability Tool)")
 
-print(at.set_availability("2026-09-05", 2))
-print(at.set_availability("2026-09-06", 2))
-print(at.set_availability("2026-09-07", 1))
-print(at.set_availability("2026-09-08", 2))
+print(at.set_availability(days_from_now(0), 2))
+print(at.set_availability(days_from_now(1), 2))
+print(at.set_availability(days_from_now(2), 1))
+print(at.set_availability(days_from_now(3), 2))
 
 print("\nAll logged availability:")
 pretty(at.get_availability())
@@ -87,7 +93,7 @@ pretty(mem.get_reliability_summary())
 # =======================================================================
 section("STEP 4: Checking feasibility of all deadlines (Reprioritization Tool)")
 
-result = rt.check_feasibility(as_of_date="2026-09-05")
+result = rt.check_feasibility()
 pretty(result)
 
 print("\n>>> AT-RISK TASKS:", result.get("at_risk_tasks"))
@@ -114,7 +120,7 @@ pretty(mem.get_reliability_summary())
 # =======================================================================
 section("STEP 6: Re-checking feasibility with the NEWLY LEARNED pace")
 
-result2 = rt.check_feasibility(as_of_date="2026-09-05")
+result2 = rt.check_feasibility()
 pretty(result2)
 
 print("\n>>> AT-RISK TASKS (after learning):", result2.get("at_risk_tasks"))
